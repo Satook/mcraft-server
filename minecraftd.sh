@@ -321,19 +321,20 @@ backup_files() {
 		exit 11
 	fi
 
-	echo "Starting backup..."
 	FILE="$(date +%Y_%m_%d_%H.%M.%S).tar.gz"
 	${SUDO_CMD} mkdir -p "${BACKUP_DEST}"
 	if server_is_running; then
+		echo -n "Starting running server backup to ${FILE}..."
 		game_command save-off
 		game_command save-all
-		sync && wait
+		sleep 10
 		${SUDO_CMD} tar -C "${SERVER_ROOT}" -cJf "${BACKUP_DEST}/${FILE}" --exclude '*/logs/*' .
 		game_command save-on
 	else
+		echo -n "Starting offline server backup to ${FILE}..."
 		${SUDO_CMD} tar -C "${SERVER_ROOT}" -cJf "${BACKUP_DEST}/${FILE}" --exclude '*/logs/*' .
 	fi
-	echo -e "\e[39;1mbackup completed\e[0m\n"
+	echo -e "\e[39;1m done\e[0m\n"
 
 	echo -n "Only keeping the last ${KEEP_BACKUPS} backups and removing the other ones..."
 	BACKUP_COUNT=$(for f in "${BACKUP_DEST}"/[0-9_.]*; do echo "${f}"; done | wc -l)
