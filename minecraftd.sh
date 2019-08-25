@@ -8,27 +8,41 @@ declare -r game="minecraft"
 # Variables in capital letters may be passed through the command line others not.
 # Avoid altering any of those later in the code since they may be readonly (IDLE_SERVER is an exception!)
 
-# You may use this script for any game server of your choice, just alter the config file
-[[ -n "${SERVER_ROOT}" ]]  && declare -r SERVER_ROOT=${SERVER_ROOT}   || SERVER_ROOT="/srv/${game}"
-[[ -n "${BACKUP_DEST}" ]]  && declare -r BACKUP_DEST=${BACKUP_DEST}   || BACKUP_DEST="/srv/${game}/backup"
-[[ -n "${BACKUP_PATHS}" ]] && declare -r BACKUP_PATHS=${BACKUP_PATHS} || BACKUP_PATHS="world"
-[[ -n "${KEEP_BACKUPS}" ]] && declare -r KEEP_BACKUPS=${KEEP_BACKUPS} || KEEP_BACKUPS="10"
-[[ -n "${GAME_USER}" ]]    && declare -r GAME_USER=${GAME_USER}       || GAME_USER="minecraft"
-[[ -n "${MAIN_EXECUTABLE}" ]] && declare -r MAIN_EXECUTABLE=${MAIN_EXECUTABLE} || MAIN_EXECUTABLE="minecraft_server.jar"
-[[ -n "${SESSION_NAME}" ]] && declare -r SESSION_NAME=${SESSION_NAME} || SESSION_NAME="${game}"
+require_arg() {
+	if [[ -z "${!1}" ]] ; then
+		echo "Required config ${1} is missing. Example ${2}"
+		exit 11
+	fi
+}
 
-# Command and parameter declaration with which to start the server
-[[ -n "${SERVER_START_CMD}" ]] && declare -r SERVER_START_CMD=${SERVER_START_CMD} || SERVER_START_CMD="java -Xms512M -Xmx1024M -XX:ParallelGCThreads=1 -jar './${MAIN_EXECUTABLE}' nogui"
+# You may use this script for any game server of your choice, just alter the config file
+require_arg SERVER_ROOT "/opt/minecraft/servers/creative"
+require_arg BACKUP_DEST "/data/backups/minecraft/creative"
+require_arg KEEP_BACKUPS "30"
+require_arg GAME_USER "minecraft"
+require_arg JAR_FILE "/opt/minecraft/minecraft_server.1.14.4.jar"
+require_arg SESSION_NAME "minecraft"
+
+# You either need to provide the max RAM
+if [[ -z "${SERVER_START_CMD}" ]]; then
+	require_arg MAX_RAM_MB "1536"
+	SERVER_START_CMD="java -Xms512M -Xmx${MAX_RAM_MB}M -XX:ParallelGCThreads=1 -jar './${JAR_FILE}' nogui"
+fi
 
 # System parameters for the control script
-[[ -n "${IDLE_SERVER}" ]]       && tmp_IDLE_SERVER=${IDLE_SERVER}   || IDLE_SERVER="false"
-[[ -n "${IDLE_SESSION_NAME}" ]] && declare -r IDLE_SESSION_NAME=${IDLE_SESSION_NAME} || IDLE_SESSION_NAME="idle_server_${SESSION_NAME}"
-[[ -n "${GAME_PORT}" ]]         && declare -r GAME_PORT=${GAME_PORT}       || GAME_PORT="25565"
-[[ -n "${CHECK_PLAYER_TIME}" ]] && declare -r CHECK_PLAYER_TIME=${CHECK_PLAYER_TIME} || CHECK_PLAYER_TIME="30"
-[[ -n "${IDLE_IF_TIME}" ]]      && declare -r IDLE_IF_TIME=${IDLE_IF_TIME} || IDLE_IF_TIME="1200"
+require_arg IDLE_SERVER "false"
+require_arg GAME_PORT "25565"
+require_arg CHECK_PLAYER_TIME "30"
+require_arg IDLE_IF_TIME "1200"
+IDLE_SESSION_NAME="idle_server_${SESSION_NAME}"
 
 # Additional configuration options which only few may need to alter
-[[ -n "${GAME_COMMAND_DUMP}" ]] && declare -r GAME_COMMAND_DUMP=${GAME_COMMAND_DUMP} || GAME_COMMAND_DUMP="/tmp/${myname}_${SESSION_NAME}_command_dump.txt"
+[[ -n "${GAME_COMMAND_DUMP}" ]] || GAME_COMMAND_DUMP="/tmp/${myname}_${SESSION_NAME}_command_dump.txt"
+
+# make all the config READ_ONLY
+declare -r SERVER_ROOT BACKUP_DEST KEEP_BACKUPS GAME_USER JAR_FILE SESSION_NAME \
+	SERVER_START_CMD IDLE_SESSION_NAME GAME_PORT CHECK_PLAYER_TIME IDLE_IF_TIME		\
+	GAME_COMMAND_DUMP
 
 # Variables passed over the command line will always override the one from a config file
 source /etc/conf.d/"${game}" 2>/dev/null || >&2 echo "Could not source /etc/conf.d/${game}"
@@ -79,8 +93,16 @@ game_command() {
 	fi
 }
 
+server_is_running() {
+	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+		return 0
+	else
+		return 1
+	fi
+}
+
 # Check whether there are player on the server through list
-is_player_online() {
+no_players_online() {
 	response="$(sleep_time=0.6 return_stdout=true game_command list)"
 	# Delete leading line and free response string from fancy characters
 	response="$(echo "${response}" | sed -r -e '$!d' -e 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})*)?[JKmsuG]//g')"
@@ -117,13 +139,13 @@ idle_server_daemon() {
 		# Retry in ${CHECK_PLAYER_TIME} seconds
 		sleep ${CHECK_PLAYER_TIME}
 
-		if screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+		if SUDO_CMD="" server_is_running then
 			# Game server is up and running
 			if [[ "$(screen -S "${SESSION_NAME}" -ls | sed -n "s/.*${SESSION_NAME}\s\+//gp")" == "(Attached)" ]]; then
 				# An administrator is connected to the console, pause player checking
 				echo "An admin is connected to the console. Pause player checking."
 			# Check for active player
-			elif SUDO_CMD="" is_player_online; then
+			elif SUDO_CMD="" no_players_online; then
 				# No player was seen on the server through list
 				no_player=$(( no_player + CHECK_PLAYER_TIME ))
 				# Stop the game server if no player was active for at least ${IDLE_IF_TIME}
@@ -131,7 +153,7 @@ idle_server_daemon() {
 					IDLE_SERVER="false" ${myname} stop
 					# Wait for game server to go down
 					for i in {1..100}; do
-						screen -S "${SESSION_NAME}" -Q select . > /dev/null || break
+						SUDO_CMD="" server_is_running || break
 						[[ $i -eq 100 ]] && echo -e "An \e[39;1merror\e[0m occurred while trying to reset the idle_server!"
 						sleep 0.1
 					done
@@ -160,7 +182,7 @@ idle_server_daemon() {
 # Start the server if it is not already running
 server_start() {
 	# Start the game server
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		echo "A screen ${SESSION_NAME} session is already running. Please close it first."
 	else
 		echo -en "Starting server..."
@@ -216,11 +238,11 @@ server_stop() {
 	fi
 
 	# Gracefully exit the game server
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		# Game server is up and running, gracefully stop the server when there are still active players
 
 		# Check for active player
-		if is_player_online; then
+		if no_players_online; then
 			# No player was seen on the server through list
 			echo -en "Server is going down..."
 			game_command stop
@@ -240,7 +262,7 @@ server_stop() {
 
 		# Finish as soon as the server has shut down completely
 		for i in {1..100}; do
-			if ! ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+			if ! server_is_running; then
 				echo -e "\e[39;1m done\e[0m"
 				break
 			fi
@@ -270,11 +292,11 @@ server_status() {
 	fi
 
 	# Print status information for the game server
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		echo -e "Status:\e[39;1m running\e[0m"
 
 		# Calculating memory usage
-		for p in $(${SUDO_CMD} pgrep -f "${MAIN_EXECUTABLE}"); do
+		for p in $(${SUDO_CMD} pgrep -f "${JAR_FILE}"); do
 			ps -p"${p}" -O rss | tail -n 1;
 		done | gawk '{ count ++; sum += $2 }; END {count --; print "Number of processes =", count, "(screen, bash,", count-2, "x server)"; print "Total memory usage =", sum/1024, "MB" ;};'
 	else
@@ -284,7 +306,7 @@ server_status() {
 
 # Restart the complete server by shutting it down and starting it again
 server_restart() {
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		server_stop
 		server_start
 	else
@@ -303,14 +325,14 @@ backup_files() {
 	echo "Starting backup..."
 	FILE="$(date +%Y_%m_%d_%H.%M.%S).tar.gz"
 	${SUDO_CMD} mkdir -p "${BACKUP_DEST}"
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		game_command save-off
 		game_command save-all
 		sync && wait
-		${SUDO_CMD} tar -C "${SERVER_ROOT}" -czf "${BACKUP_DEST}/${FILE}" --totals ${BACKUP_PATHS} 2>&1 | grep -v "tar: Removing leading "
+		${SUDO_CMD} tar -C "${SERVER_ROOT}" -cJf "${BACKUP_DEST}/${FILE}" --exclude '*/logs/*' .
 		game_command save-on
 	else
-		${SUDO_CMD} tar -C "${SERVER_ROOT}" -czf "${BACKUP_DEST}/${FILE}" --totals ${BACKUP_PATHS} 2>&1 | grep -v "tar: Removing leading "
+		${SUDO_CMD} tar -C "${SERVER_ROOT}" -cJf "${BACKUP_DEST}/${FILE}" --exclude '*/logs/*' .
 	fi
 	echo -e "\e[39;1mbackup completed\e[0m\n"
 
@@ -335,7 +357,7 @@ backup_restore() {
 	fi
 
 	# Only allow the user to restore a backup if the server is down
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		>&2 echo -e "The \e[39;1mserver should be down\e[0m in order to restore the world data."
 		exit 3
 	fi
@@ -401,7 +423,7 @@ server_command() {
 		exit 1
 	fi
 
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		return_stdout=true game_command "$@"
 	else
 		echo "There is no ${SESSION_NAME} session to connect to."
@@ -410,7 +432,7 @@ server_command() {
 
 # Enter the screen game session
 server_console() {
-	if ${SUDO_CMD} screen -S "${SESSION_NAME}" -Q select . > /dev/null; then
+	if server_is_running; then
 		# Circumvent a permission bug related to running GNU screen as a different user,
 		# see e.g. https://serverfault.com/questions/116775/sudo-as-different-user-and-running-screen
 		${SUDO_CMD} script -q -c "screen -S \"${SESSION_NAME}\" -rx" /dev/null
