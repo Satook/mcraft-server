@@ -44,9 +44,6 @@ declare -r SERVER_ROOT BACKUP_DEST KEEP_BACKUPS GAME_USER JAR_FILE SESSION_NAME 
 	SERVER_START_CMD IDLE_SESSION_NAME GAME_PORT CHECK_PLAYER_TIME IDLE_IF_TIME		\
 	GAME_COMMAND_DUMP
 
-# Variables passed over the command line will always override the one from a config file
-source /etc/conf.d/"${game}" 2>/dev/null || >&2 echo "Could not source /etc/conf.d/${game}"
-
 # Preserve the content of IDLE_SERVER without making it readonly
 [[ -n ${tmp_IDLE_SERVER} ]] && IDLE_SERVER=${tmp_IDLE_SERVER}
 
