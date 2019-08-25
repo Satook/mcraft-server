@@ -4,6 +4,8 @@
 declare -r myname="minecraftd"
 declare -r game="minecraft"
 
+echo "Script name: ${0}"
+
 # General rule for the variable-naming-schema:
 # Variables in capital letters may be passed through the command line others not.
 # Avoid altering any of those later in the code since they may be readonly (IDLE_SERVER is an exception!)
@@ -26,7 +28,7 @@ require_arg SESSION_NAME "minecraft"
 # You either need to provide the max RAM
 if [[ -z "${SERVER_START_CMD}" ]]; then
 	require_arg MAX_RAM_MB "1536"
-	SERVER_START_CMD="java -Xms512M -Xmx${MAX_RAM_MB}M -XX:ParallelGCThreads=1 -jar './${JAR_FILE}' nogui"
+	SERVER_START_CMD="java -Xms512M -Xmx${MAX_RAM_MB}M -XX:ParallelGCThreads=1 -jar '${JAR_FILE}' nogui"
 fi
 
 # System parameters for the control script
@@ -34,7 +36,7 @@ require_arg IDLE_SERVER "false"
 require_arg GAME_PORT "25565"
 require_arg CHECK_PLAYER_TIME "30"
 require_arg IDLE_IF_TIME "1200"
-IDLE_SESSION_NAME="idle_server_${SESSION_NAME}"
+IDLE_SESSION_NAME="${SESSION_NAME}_idle_server"
 
 # Additional configuration options which only few may need to alter
 [[ -n "${GAME_COMMAND_DUMP}" ]] || GAME_COMMAND_DUMP="/tmp/${myname}_${SESSION_NAME}_command_dump.txt"
@@ -136,7 +138,7 @@ idle_server_daemon() {
 		# Retry in ${CHECK_PLAYER_TIME} seconds
 		sleep ${CHECK_PLAYER_TIME}
 
-		if SUDO_CMD="" server_is_running then
+		if SUDO_CMD="" server_is_running; then
 			# Game server is up and running
 			if [[ "$(screen -S "${SESSION_NAME}" -ls | sed -n "s/.*${SESSION_NAME}\s\+//gp")" == "(Attached)" ]]; then
 				# An administrator is connected to the console, pause player checking
@@ -149,10 +151,10 @@ idle_server_daemon() {
 				if [[ "${no_player}" -ge "${IDLE_IF_TIME}" ]]; then
 					IDLE_SERVER="false" ${myname} stop
 					# Wait for game server to go down
-					for i in {1..100}; do
+					for i in {1..60}; do
 						SUDO_CMD="" server_is_running || break
 						[[ $i -eq 100 ]] && echo -e "An \e[39;1merror\e[0m occurred while trying to reset the idle_server!"
-						sleep 0.1
+						sleep 1
 					done
 					# Reset timer and give the player 300 seconds to connect after pinging
 					no_player=$(( IDLE_IF_TIME - 300 ))
