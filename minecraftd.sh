@@ -1,82 +1,5 @@
 #!/bin/bash
 
-# The actual program name
-declare -r myname="minecraftd"
-declare -r game="minecraft"
-
-echo "Script name: ${0}"
-
-# General rule for the variable-naming-schema:
-# Variables in capital letters may be passed through the command line others not.
-# Avoid altering any of those later in the code since they may be readonly (IDLE_SERVER is an exception!)
-
-require_arg() {
-	if [[ -z "${!1}" ]] ; then
-		echo "Required config ${1} is missing. Example ${2}"
-		exit 11
-	fi
-}
-
-# You may use this script for any game server of your choice, just alter the config file
-require_arg SERVER_ROOT "/opt/minecraft/servers/creative"
-require_arg BACKUP_DEST "/data/backups/minecraft/creative"
-require_arg KEEP_BACKUPS "30"
-require_arg GAME_USER "minecraft"
-require_arg JAR_FILE "/opt/minecraft/minecraft_server.1.14.4.jar"
-require_arg SESSION_NAME "minecraft"
-
-# You either need to provide the max RAM
-if [[ -z "${SERVER_START_CMD}" ]]; then
-	require_arg MAX_RAM_MB "1536"
-	SERVER_START_CMD="java -Xms512M -Xmx${MAX_RAM_MB}M -XX:ParallelGCThreads=1 -jar '${JAR_FILE}' nogui"
-fi
-
-# System parameters for the control script
-require_arg IDLE_SERVER "false"
-require_arg GAME_PORT "25565"
-require_arg CHECK_PLAYER_TIME "30"
-require_arg IDLE_IF_TIME "1200"
-IDLE_SESSION_NAME="${SESSION_NAME}_idle_server"
-
-# Additional configuration options which only few may need to alter
-[[ -n "${GAME_COMMAND_DUMP}" ]] || GAME_COMMAND_DUMP="/tmp/${myname}_${SESSION_NAME}_command_dump.txt"
-
-# make all the config READ_ONLY
-declare -r SERVER_ROOT BACKUP_DEST KEEP_BACKUPS GAME_USER JAR_FILE SESSION_NAME \
-	SERVER_START_CMD IDLE_SESSION_NAME GAME_PORT CHECK_PLAYER_TIME IDLE_IF_TIME		\
-	GAME_COMMAND_DUMP
-
-# Preserve the content of IDLE_SERVER without making it readonly
-[[ -n ${tmp_IDLE_SERVER} ]] && IDLE_SERVER=${tmp_IDLE_SERVER}
-
-
-# Strictly disallow uninitialized Variables
-set -u
-# Exit if a single command breaks and its failure is not handled accordingly
-set -e
-
-# Check whether sudo is needed at all
-if [[ "$(whoami)" == "${GAME_USER}" ]]; then
-	SUDO_CMD=""
-else
-	SUDO_CMD="sudo -u ${GAME_USER}"
-fi
-
-# Choose which flavor of netcat is to be used
-if command -v netcat &> /dev/null; then
-	NETCAT_CMD="netcat"
-elif command -v ncat &> /dev/null; then
-	NETCAT_CMD="ncat"
-else
-	NETCAT_CMD=""
-fi
-
-# Check for sudo rigths
-if [[ "$(${SUDO_CMD} whoami)" != "${GAME_USER}" ]]; then
-	>&2 echo -e "You have \e[39;1mno permission\e[0m to run commands as $GAME_USER user."
-	exit 21
-fi
-
 # Pipe any given argument to the game server console,
 # sleep for $sleep_time and return its output if $return_stdout is set
 game_command() {
@@ -210,8 +133,8 @@ server_start() {
 				sleep 0.1
 			done
 		else
-			echo -en "Starting idle server daeomon..."
-			${SUDO_CMD} screen -dmS "${IDLE_SESSION_NAME}" /bin/bash -c "${myname} idle_server_daemon"
+			echo -en "Starting idle server daemon..."
+			${SUDO_CMD} screen -dmS "${IDLE_SESSION_NAME}" /bin/bash "${myname}" "${conf}" idle_server_daemon
 			echo -e "\e[39;1m done\e[0m"
 		fi
 	fi
@@ -321,7 +244,7 @@ backup_files() {
 		exit 11
 	fi
 
-	FILE="$(date +%Y_%m_%d_%H.%M.%S).tar.gz"
+	FILE="$(date +%Y_%m_%d_%H.%M.%S).tar.xz"
 	${SUDO_CMD} mkdir -p "${BACKUP_DEST}"
 	if server_is_running; then
 		echo -n "Starting running server backup to ${FILE}..."
@@ -447,7 +370,7 @@ help() {
 	This script was design to easily control any ${game} server. Quite every parameter for a given
 	${game} server derivative can be altered by editing the variables in the configuration file.
 
-	Usage: ${myname} {start|stop|status|backup|restore|command <command>|console}
+	Usage: ${myname} CONFIG {start|stop|status|backup|restore|command <command>|console}
 	    start                Start the ${game} server
 	    stop                 Stop the ${game} server
 	    restart              Restart the ${game} server
@@ -461,7 +384,85 @@ help() {
 	EOF
 }
 
-case "${1:-}" in
+# The actual program name
+declare -r myname="${0}"
+declare -r game="minecraft"
+declare -r conf="${1-}"
+
+# Read in our configuraton file
+if [[ -f "${conf}"  ]]; then
+	source "${conf}"
+else
+	help
+	exit 1
+fi
+
+# General rule for the variable-naming-schema:
+# Variables in capital letters may be passed through the command line others not.
+# Avoid altering any of those later in the code since they may be readonly (IDLE_SERVER is an exception!)
+
+require_arg() {
+	if [[ -z "${!1}" ]] ; then
+		echo "Required config ${1} is missing. Example ${2}"
+		exit 11
+	fi
+}
+
+# You may use this script for any game server of your choice, just alter the config file
+require_arg SERVER_ROOT "/opt/minecraft/servers/creative"
+require_arg BACKUP_DEST "/data/backups/minecraft/creative"
+require_arg KEEP_BACKUPS "30"
+require_arg GAME_USER "minecraft"
+require_arg JAR_FILE "/opt/minecraft/minecraft_server.1.14.4.jar"
+require_arg SESSION_NAME "minecraft"
+
+# You either need to provide the max RAM
+if [[ -z "${SERVER_START_CMD}" ]]; then
+	require_arg MAX_RAM_MB "1536"
+	SERVER_START_CMD="java -Xms512M -Xmx${MAX_RAM_MB}M -XX:ParallelGCThreads=1 -jar '${JAR_FILE}' nogui"
+fi
+
+# System parameters for the control script
+require_arg IDLE_SERVER "false"
+require_arg GAME_PORT "25565"
+require_arg CHECK_PLAYER_TIME "30"
+require_arg IDLE_IF_TIME "1200"
+IDLE_SESSION_NAME="${SESSION_NAME}_idle_server"
+
+# Additional configuration options which only few may need to alter
+[[ -n "${GAME_COMMAND_DUMP}" ]] || GAME_COMMAND_DUMP="/tmp/${myname}_${SESSION_NAME}_command_dump.txt"
+
+# make all the config READ_ONLY
+declare -r SERVER_ROOT BACKUP_DEST KEEP_BACKUPS GAME_USER JAR_FILE SESSION_NAME \
+	SERVER_START_CMD IDLE_SESSION_NAME GAME_PORT CHECK_PLAYER_TIME IDLE_IF_TIME		\
+	GAME_COMMAND_DUMP
+
+# Preserve the content of IDLE_SERVER without making it readonly
+[[ -n ${tmp_IDLE_SERVER} ]] && IDLE_SERVER=${tmp_IDLE_SERVER}
+
+# Check whether sudo is needed at all
+if [[ "$(whoami)" == "${GAME_USER}" ]]; then
+	SUDO_CMD=""
+else
+	SUDO_CMD="sudo -u ${GAME_USER}"
+fi
+
+# Choose which flavor of netcat is to be used
+if command -v netcat &> /dev/null; then
+	NETCAT_CMD="netcat"
+elif command -v ncat &> /dev/null; then
+	NETCAT_CMD="ncat"
+else
+	NETCAT_CMD=""
+fi
+
+# Check for sudo rigths
+if [[ "$(${SUDO_CMD} whoami)" != "${GAME_USER}" ]]; then
+	>&2 echo -e "You have \e[39;1mno permission\e[0m to run commands as $GAME_USER user."
+	exit 21
+fi
+
+case "${2:-}" in
 	start)
 	server_start
 	;;
